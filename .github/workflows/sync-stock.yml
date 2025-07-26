@@ -3,7 +3,7 @@ name: Sync WooCommerce Stock
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/30 * * * *'   # every 30 minutes
   workflow_dispatch:
 
 jobs:
@@ -29,6 +29,6 @@ jobs:
           WOOCOMMERCE_API_URL: ${{ secrets.WOOCOMMERCE_API_URL }}
           WOOCOMMERCE_CONSUMER_KEY: ${{ secrets.WOOCOMMERCE_CONSUMER_KEY }}
           WOOCOMMERCE_CONSUMER_SECRET: ${{ secrets.WOOCOMMERCE_CONSUMER_SECRET }}
-          # override if you used a different meta key than `warde_url`:
+          # override if your meta‑key is different:
           # WARD_URL_META_KEY: your_meta_key
         run: npm run sync
