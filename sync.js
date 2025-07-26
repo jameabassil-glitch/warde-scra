@@ -1,106 +1,127 @@
-#!/usr/bin/env node
-/**
- * sync.js
- *
- * - Fetches all WooCommerce products with a `warde_url` custom field.
- * - Uses Puppeteer to scrape “Available Stock” from each Warde URL.
- * - Updates the stock in WooCommerce via the REST API.
- *
- * Requires Node 18+ (for built‑in fetch) and the following env vars:
- *   WOOCOMMERCE_API_URL
- *   WOOCOMMERCE_CONSUMER_KEY
- *   WOOCOMMERCE_CONSUMER_SECRET
- */
+// sync.js
+//
+// Node 18+ has a built‑in `fetch`. No need for node‑fetch.
+// Installs: chrome-aws-lambda, puppeteer-core
 
-const puppeteer = require('puppeteer');
+const chromium = require('chrome-aws-lambda');
+const puppeteer = chromium.puppeteer || require('puppeteer-core');
 
 const {
   WOOCOMMERCE_API_URL,
   WOOCOMMERCE_CONSUMER_KEY,
-  WOOCOMMERCE_CONSUMER_SECRET
+  WOOCOMMERCE_CONSUMER_SECRET,
+  FABRIC_CATEGORY_ID,
+  WARD_URL_META_KEY = 'warde_url'
 } = process.env;
 
-// 1) Validate environment variables
-if (!WOOCOMMERCE_API_URL || !WOOCOMMERCE_CONSUMER_KEY || !WOOCOMMERCE_CONSUMER_SECRET) {
-  console.error('❌ Missing one of: WOOCOMMERCE_API_URL, WOOCOMMERCE_CONSUMER_KEY, WOOCOMMERCE_CONSUMER_SECRET');
+if (
+  !WOOCOMMERCE_API_URL ||
+  !WOOCOMMERCE_CONSUMER_KEY ||
+  !WOOCOMMERCE_CONSUMER_SECRET ||
+  !FABRIC_CATEGORY_ID
+) {
+  console.error(
+    'Missing one of WOOCOMMERCE_API_URL, WOOCOMMERCE_CONSUMER_KEY, ' +
+    'WOOCOMMERCE_CONSUMER_SECRET or FABRIC_CATEGORY_ID'
+  );
   process.exit(1);
 }
 
-// 2) Fetch products that have the `warde_url` meta field
-async function loadProductsFromWoo() {
-  const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products?per_page=100&meta_key=warde_url`;
-  const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`).toString('base64');
-  const resp = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
-  if (!resp.ok) throw new Error(`Fetch products failed: ${resp.status}`);
-  const products = await resp.json();
-  return products
-    .map(p => {
-      const meta = p.meta_data.find(m => m.key === 'warde_url');
-      return meta && meta.value
-        ? { id: p.id, wardeUrl: meta.value.trim() }
-        : null;
-    })
-    .filter(Boolean);
-}
+async function fetchAllFabrics() {
+  const auth = Buffer.from(
+    `${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`
+  ).toString('base64');
 
-// 3) Scrape “Available Stock” from a Warde product page
-async function extractStock(page) {
-  try {
-    await page.waitForFunction(
-      () => Array.from(document.querySelectorAll('*'))
-                .some(el => /Available\s*Stock/i.test(el.innerText)),
-      { timeout: 15000 }
-    );
-  } catch {
-    return null;
-  }
-  return page.evaluate(() => {
-    for (const el of document.querySelectorAll('*')) {
-      const m = el.innerText.match(/Available\s*Stock\s*:? *(\d+)/i);
-      if (m) return parseInt(m[1], 10);
-    }
-    return null;
-  });
-}
+  const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}` +
+              `/wp-json/wc/v3/products?category=${FABRIC_CATEGORY_ID}&per_page=100`;
 
-// 4) Update WooCommerce stock via REST API
-async function updateStock(id, qty) {
-  const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products/${id}`;
-  const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`).toString('base64');
-  const payload = { manage_stock: true };
-  if (typeof qty === 'number') {
-    payload.stock_quantity = qty;
-    payload.stock_status   = qty > 0 ? 'instock' : 'outofstock';
-  }
   const res = await fetch(url, {
+    headers: { 'Authorization': `Basic ${auth}` }
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Fetch fabrics failed (${res.status}): ${txt}`);
+  }
+  return res.json();
+}
+
+async function updateStock(id, stock) {
+  const endpoint = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}` +
+                   `/wp-json/wc/v3/products/${id}`;
+  const auth = Buffer.from(
+    `${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`
+  ).toString('base64');
+
+  const res = await fetch(endpoint, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Basic ${auth}`
+      'Authorization': `Basic ${auth}`
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      stock_quantity: stock,
+      stock_status: stock > 0 ? 'instock' : 'outofstock'
+    })
   });
-  if (!res.ok) throw new Error(`Woo update failed for ${id}: ${res.status}`);
+
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Update failed (${res.status}): ${txt}`);
+  }
+  return res.json();
+}
+
+async function scrapeStock(page, url) {
+  await page.goto(url, { waitUntil: 'networkidle2' });
+  // find element with “Available Stock”
+  const [label] = await page.$x("//*[contains(text(), 'Available Stock')]");
+  if (!label) throw new Error('No “Available Stock” label found');
+  const text = await page.evaluate(el => el.nextElementSibling?.textContent, label);
+  if (!text) throw new Error('Stock text not found after label');
+  const qty = parseInt(text.replace(/\D/g, ''), 10);
+  if (isNaN(qty)) throw new Error(`Cannot parse quantity from “${text}”`);
+  return qty;
 }
 
 (async () => {
-  const products = await loadProductsFromWoo();
-  console.log(`🔍 Found ${products.length} products with warde_url`);
-  const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
-  const page    = await browser.newPage();
+  let browser;
 
-  for (const { id, wardeUrl } of products) {
-    console.log(`→ [${id}] Visiting ${wardeUrl}`);
-    try {
-      await page.goto(wardeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      const stock = await extractStock(page);
-      console.log(`   • Stock: ${stock}`);
-      await updateStock(id, stock);
-      console.log(`   ✓ Updated WooCommerce for ${id}`);
-    } catch (err) {
-      console.error(`   ✗ Error on ${id}: ${err.message}`);
+  try {
+    console.log('🔎 Fetching fabric products…');
+    const products = await fetchAllFabrics();
+    if (!products.length) {
+      console.warn('No products found in category', FABRIC_CATEGORY_ID);
+      process.exit(0);
     }
-  }
 
-  await browser.close();
+    browser = await chromium.puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath,
+      headless: chromium.headless
+    });
+    const page = await browser.newPage();
+
+    for (const prod of products) {
+      const meta = prod.meta_data.find(m => m.key === WARD_URL_META_KEY);
+      if (!meta?.value) {
+        console.warn(`– [${prod.id}] Missing meta "${WARD_URL_META_KEY}", skipping`);
+        continue;
+      }
+
+      try {
+        console.log(`→ [${prod.id}] Scraping ${meta.value}`);
+        const stock = await scrapeStock(page, meta.value);
+        console.log(`   • Found stock: ${stock}`);
+        await updateStock(prod.id, stock);
+        console.log(`   ✓ Updated WooCommerce product ${prod.id}`);
+      } catch (err) {
+        console.error(`   ✗ [${prod.id}] ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.error('‼️ Fatal error:', err);
+  } finally {
+    if (browser) await browser.close();
+  }
 })();
