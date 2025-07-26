@@ -3,12 +3,16 @@
  * sync.js
  *
  * - Fetches all WooCommerce products with a `warde_url` custom field.
- * - Uses Puppeteer (bundled Chromium) to scrape “Available Stock” from each URL.
- * - Updates stock via WooCommerce REST API.
+ * - Uses Puppeteer to scrape “Available Stock” from each Warde URL.
+ * - Updates the stock in WooCommerce via the REST API.
+ *
+ * Requires Node 18+ (for built‑in fetch) and the following env vars:
+ *   WOOCOMMERCE_API_URL
+ *   WOOCOMMERCE_CONSUMER_KEY
+ *   WOOCOMMERCE_CONSUMER_SECRET
  */
 
 const puppeteer = require('puppeteer');
-const fetch = require('node-fetch');
 
 const {
   WOOCOMMERCE_API_URL,
@@ -16,13 +20,13 @@ const {
   WOOCOMMERCE_CONSUMER_SECRET
 } = process.env;
 
-// 1) Validate environment
+// 1) Validate environment variables
 if (!WOOCOMMERCE_API_URL || !WOOCOMMERCE_CONSUMER_KEY || !WOOCOMMERCE_CONSUMER_SECRET) {
   console.error('❌ Missing one of: WOOCOMMERCE_API_URL, WOOCOMMERCE_CONSUMER_KEY, WOOCOMMERCE_CONSUMER_SECRET');
   process.exit(1);
 }
 
-// 2) Load products that have warde_url meta
+// 2) Fetch products that have the `warde_url` meta field
 async function loadProductsFromWoo() {
   const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products?per_page=100&meta_key=warde_url`;
   const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`).toString('base64');
@@ -32,12 +36,14 @@ async function loadProductsFromWoo() {
   return products
     .map(p => {
       const meta = p.meta_data.find(m => m.key === 'warde_url');
-      return meta && meta.value ? { id: p.id, wardeUrl: meta.value.trim() } : null;
+      return meta && meta.value
+        ? { id: p.id, wardeUrl: meta.value.trim() }
+        : null;
     })
     .filter(Boolean);
 }
 
-// 3) Scrape stock number from Warde page
+// 3) Scrape “Available Stock” from a Warde product page
 async function extractStock(page) {
   try {
     await page.waitForFunction(
@@ -57,14 +63,14 @@ async function extractStock(page) {
   });
 }
 
-// 4) Update WooCommerce stock via REST
+// 4) Update WooCommerce stock via REST API
 async function updateStock(id, qty) {
   const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products/${id}`;
   const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`).toString('base64');
-  const body = { manage_stock: true };
+  const payload = { manage_stock: true };
   if (typeof qty === 'number') {
-    body.stock_quantity = qty;
-    body.stock_status   = qty > 0 ? 'instock' : 'outofstock';
+    payload.stock_quantity = qty;
+    payload.stock_status   = qty > 0 ? 'instock' : 'outofstock';
   }
   const res = await fetch(url, {
     method: 'PUT',
@@ -72,18 +78,18 @@ async function updateStock(id, qty) {
       'Content-Type': 'application/json',
       Authorization: `Basic ${auth}`
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(payload)
   });
   if (!res.ok) throw new Error(`Woo update failed for ${id}: ${res.status}`);
 }
 
 (async () => {
-  const list    = await loadProductsFromWoo();
-  console.log(`🔍 Found ${list.length} products with warde_url`);
+  const products = await loadProductsFromWoo();
+  console.log(`🔍 Found ${products.length} products with warde_url`);
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
   const page    = await browser.newPage();
 
-  for (const { id, wardeUrl } of list) {
+  for (const { id, wardeUrl } of products) {
     console.log(`→ [${id}] Visiting ${wardeUrl}`);
     try {
       await page.goto(wardeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
