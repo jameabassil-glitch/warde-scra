@@ -1,4 +1,4 @@
-
+// package.json
 {
   "name": "woo-stock-sync",
   "version": "1.0.0",
@@ -10,5 +10,8 @@
   "dependencies": {
     "chrome-aws-lambda": "^10.1.0",
     "puppeteer-core": "^10.1.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
