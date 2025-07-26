@@ -7,8 +7,7 @@
     "start": "node sync.js"
   },
   "dependencies": {
-    "chrome-aws-lambda": "^10.1.0",
-    "puppeteer-core":   "^22.5.0",
-    "node-fetch":       "^3.4.0"
+    "puppeteer":   "^22.5.0",
+    "node-fetch":  "^3.4.0"
   }
 }
