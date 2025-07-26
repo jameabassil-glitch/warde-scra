@@ -1,6 +1,6 @@
 // sync.js
 //
-// Uses axios + cheerio for HTML scraping—no browser needed.
+// Uses axios + cheerio for HTML scraping—no headless browser needed.
 
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -28,7 +28,9 @@ async function fetchAllProducts() {
   ).toString('base64');
 
   const base = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products`;
-  let page = 1, perPage = 100, all = [];
+  let page = 1;
+  const perPage = 100;
+  const all = [];
 
   while (true) {
     const res = await axios.get(base, {
@@ -39,6 +41,7 @@ async function fetchAllProducts() {
     all.push(...res.data);
     page++;
   }
+
   return all;
 }
 
@@ -63,19 +66,26 @@ async function scrapeStock(url) {
   const res = await axios.get(url);
   const $ = cheerio.load(res.data);
 
-  // find the element containing "Available Stock" and grab its next sibling's text
-  let qtyText;
-  $("*").each((_, el) => {
-    if ($(el).text().trim().includes("Available Stock")) {
-      qtyText = $(el).next().text().trim();
-      return false; // break
-    }
-  });
+  // 1) Find <span class="title">Available Stock</span>
+  // 2) Grab its sibling <span class="value"> text
+  const titleEl = $('li.flex span.title')
+    .filter((i, el) => $(el).text().trim() === 'Available Stock');
 
-  if (!qtyText) throw new Error('Could not find “Available Stock” in HTML');
-  const n = parseInt(qtyText.replace(/\D/g, ''), 10);
-  if (isNaN(n)) throw new Error(`Parsed non-number "${qtyText}"`);
-  return n;
+  if (!titleEl.length) {
+    throw new Error('Could not find <span class="title">Available Stock</span>');
+  }
+
+  const valueText = titleEl
+    .next('span.value')
+    .text()
+    .trim(); // e.g. "109 Meters"
+
+  const match = valueText.match(/(\d+)/);
+  if (!match) {
+    throw new Error(`No numeric stock in "${valueText}"`);
+  }
+
+  return parseInt(match[1], 10);
 }
 
 (async () => {
@@ -83,7 +93,6 @@ async function scrapeStock(url) {
     console.log('🔎 Fetching all products…');
     const products = await fetchAllProducts();
 
-    // only those with your custom-field
     const fabrics = products.filter(p =>
       p.meta_data.some(m => m.key === WARD_URL_META_KEY && m.value)
     );
