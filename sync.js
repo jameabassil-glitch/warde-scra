@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
  * sync.js
- *  - Fetches all WooCommerce products that have a `warde_url` custom field.
- *  - Scrapes “Available Stock” from each Warde URL.
- *  - Updates the stock in WooCommerce.
+ *
+ * - Fetches all WooCommerce products with a `warde_url` custom field.
+ * - Uses Puppeteer (bundled Chromium) to scrape “Available Stock” from each URL.
+ * - Updates stock via WooCommerce REST API.
  */
 
-const chrome = require('chrome-aws-lambda');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 const fetch = require('node-fetch');
 
 const {
@@ -22,35 +22,22 @@ if (!WOOCOMMERCE_API_URL || !WOOCOMMERCE_CONSUMER_KEY || !WOOCOMMERCE_CONSUMER_S
   process.exit(1);
 }
 
-// 2) Load products with warde_url meta
+// 2) Load products that have warde_url meta
 async function loadProductsFromWoo() {
-  const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products` +
-              `?per_page=100&meta_key=warde_url`;
-  const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`)
-                     .toString('base64');
+  const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products?per_page=100&meta_key=warde_url`;
+  const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`).toString('base64');
   const resp = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
-  if (!resp.ok) throw new Error(`Failed to fetch products: ${resp.status}`);
-  const list = await resp.json();
-  return list
+  if (!resp.ok) throw new Error(`Fetch products failed: ${resp.status}`);
+  const products = await resp.json();
+  return products
     .map(p => {
-      const m = p.meta_data.find(m => m.key === 'warde_url');
-      return m && m.value ? { id: p.id, wardeUrl: m.value.trim() } : null;
+      const meta = p.meta_data.find(m => m.key === 'warde_url');
+      return meta && meta.value ? { id: p.id, wardeUrl: meta.value.trim() } : null;
     })
     .filter(Boolean);
 }
 
-// 3) Launch headless Chrome
-async function launchBrowser() {
-  const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || await chrome.executablePath;
-  return puppeteer.launch({
-    args: [...chrome.args, '--no-sandbox'],
-    defaultViewport: chrome.defaultViewport,
-    executablePath: execPath,
-    headless: true,
-  });
-}
-
-// 4) Scrape stock number
+// 3) Scrape stock number from Warde page
 async function extractStock(page) {
   try {
     await page.waitForFunction(
@@ -63,23 +50,21 @@ async function extractStock(page) {
   }
   return page.evaluate(() => {
     for (const el of document.querySelectorAll('*')) {
-      const t = el.innerText;
-      const m = t.match(/Available\s*Stock\s*:? *(\d+)/i);
+      const m = el.innerText.match(/Available\s*Stock\s*:? *(\d+)/i);
       if (m) return parseInt(m[1], 10);
     }
     return null;
   });
 }
 
-// 5) Update WooCommerce stock
+// 4) Update WooCommerce stock via REST
 async function updateStock(id, qty) {
   const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products/${id}`;
-  const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`)
-                     .toString('base64');
-  const payload = { manage_stock: true };
+  const auth = Buffer.from(`${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`).toString('base64');
+  const body = { manage_stock: true };
   if (typeof qty === 'number') {
-    payload.stock_quantity = qty;
-    payload.stock_status   = qty > 0 ? 'instock' : 'outofstock';
+    body.stock_quantity = qty;
+    body.stock_status   = qty > 0 ? 'instock' : 'outofstock';
   }
   const res = await fetch(url, {
     method: 'PUT',
@@ -87,19 +72,19 @@ async function updateStock(id, qty) {
       'Content-Type': 'application/json',
       Authorization: `Basic ${auth}`
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(body)
   });
-  if (!res.ok) throw new Error(`Woo update error for ${id}: ${res.status}`);
+  if (!res.ok) throw new Error(`Woo update failed for ${id}: ${res.status}`);
 }
 
 (async () => {
-  const list = await loadProductsFromWoo();
-  console.log(`🔍 Found ${list.length} products with warde_url meta`);
-  const browser = await launchBrowser();
+  const list    = await loadProductsFromWoo();
+  console.log(`🔍 Found ${list.length} products with warde_url`);
+  const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
   const page    = await browser.newPage();
 
   for (const { id, wardeUrl } of list) {
-    console.log(`→ [${id}] Checking ${wardeUrl}`);
+    console.log(`→ [${id}] Visiting ${wardeUrl}`);
     try {
       await page.goto(wardeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       const stock = await extractStock(page);
