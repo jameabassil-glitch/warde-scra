@@ -10,21 +10,24 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: 18
           cache: 'npm'
+          cache-dependency-path: package.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Run stock sync
         env:
           WOOCOMMERCE_API_URL: ${{ secrets.WOOCOMMERCE_API_URL }}
           WOOCOMMERCE_CONSUMER_KEY: ${{ secrets.WOOCOMMERCE_CONSUMER_KEY }}
           WOOCOMMERCE_CONSUMER_SECRET: ${{ secrets.WOOCOMMERCE_CONSUMER_SECRET }}
-          # nothing else needed—WARD_URL_META_KEY defaults to "warde_url"
+          # If you use a different meta‑key, override here:
+          # WARD_URL_META_KEY: your_meta_key
         run: npm run sync
