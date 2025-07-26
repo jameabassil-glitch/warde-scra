@@ -9,6 +9,7 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -28,6 +29,6 @@ jobs:
           WOOCOMMERCE_API_URL: ${{ secrets.WOOCOMMERCE_API_URL }}
           WOOCOMMERCE_CONSUMER_KEY: ${{ secrets.WOOCOMMERCE_CONSUMER_KEY }}
           WOOCOMMERCE_CONSUMER_SECRET: ${{ secrets.WOOCOMMERCE_CONSUMER_SECRET }}
-          # If you use a different meta‑key, override here:
+          # override if you used a different meta key than `warde_url`:
           # WARD_URL_META_KEY: your_meta_key
         run: npm run sync
