@@ -1,6 +1,6 @@
 // sync.js
 //
-// Node 18+ has a built‑in `fetch`. No need for node‑fetch.
+// Node 18+ includes fetch natively.
 // Installs: chrome-aws-lambda, puppeteer-core
 
 const chromium = require('chrome-aws-lambda');
@@ -10,39 +10,42 @@ const {
   WOOCOMMERCE_API_URL,
   WOOCOMMERCE_CONSUMER_KEY,
   WOOCOMMERCE_CONSUMER_SECRET,
-  FABRIC_CATEGORY_ID,
   WARD_URL_META_KEY = 'warde_url'
 } = process.env;
 
-if (
-  !WOOCOMMERCE_API_URL ||
-  !WOOCOMMERCE_CONSUMER_KEY ||
-  !WOOCOMMERCE_CONSUMER_SECRET ||
-  !FABRIC_CATEGORY_ID
-) {
+if (!WOOCOMMERCE_API_URL || !WOOCOMMERCE_CONSUMER_KEY || !WOOCOMMERCE_CONSUMER_SECRET) {
   console.error(
-    'Missing one of WOOCOMMERCE_API_URL, WOOCOMMERCE_CONSUMER_KEY, ' +
-    'WOOCOMMERCE_CONSUMER_SECRET or FABRIC_CATEGORY_ID'
+    'Error: Missing one of WOOCOMMERCE_API_URL, WOOCOMMERCE_CONSUMER_KEY or WOOCOMMERCE_CONSUMER_SECRET'
   );
   process.exit(1);
 }
 
-async function fetchAllFabrics() {
+async function fetchAllProducts() {
   const auth = Buffer.from(
     `${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`
   ).toString('base64');
 
-  const url = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}` +
-              `/wp-json/wc/v3/products?category=${FABRIC_CATEGORY_ID}&per_page=100`;
+  const base = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products`;
+  let page = 1;
+  const perPage = 100;
+  const all = [];
 
-  const res = await fetch(url, {
-    headers: { 'Authorization': `Basic ${auth}` }
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Fetch fabrics failed (${res.status}): ${txt}`);
+  while (true) {
+    const url = `${base}?per_page=${perPage}&page=${page}`;
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Basic ${auth}` }
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Fetch products failed (${res.status}): ${txt}`);
+    }
+    const batch = await res.json();
+    if (!batch.length) break;
+    all.push(...batch);
+    page += 1;
   }
-  return res.json();
+
+  return all;
 }
 
 async function updateStock(id, stock) {
@@ -73,8 +76,7 @@ async function updateStock(id, stock) {
 
 async function scrapeStock(page, url) {
   await page.goto(url, { waitUntil: 'networkidle2' });
-  // find element with “Available Stock”
-  const [label] = await page.$x("//*[contains(text(), 'Available Stock')]");
+  const [label] = await page.$x("//*[contains(text(),'Available Stock')]");
   if (!label) throw new Error('No “Available Stock” label found');
   const text = await page.evaluate(el => el.nextElementSibling?.textContent, label);
   if (!text) throw new Error('Stock text not found after label');
@@ -85,12 +87,17 @@ async function scrapeStock(page, url) {
 
 (async () => {
   let browser;
-
   try {
-    console.log('🔎 Fetching fabric products…');
-    const products = await fetchAllFabrics();
-    if (!products.length) {
-      console.warn('No products found in category', FABRIC_CATEGORY_ID);
+    console.log('🔎 Fetching all products…');
+    const products = await fetchAllProducts();
+
+    // keep only those with your custom-field
+    const fabrics = products.filter(p =>
+      p.meta_data.some(m => m.key === WARD_URL_META_KEY && !!m.value)
+    );
+
+    if (!fabrics.length) {
+      console.warn(`No products with meta "${WARD_URL_META_KEY}" found.`);
       process.exit(0);
     }
 
@@ -102,19 +109,14 @@ async function scrapeStock(page, url) {
     });
     const page = await browser.newPage();
 
-    for (const prod of products) {
+    for (const prod of fabrics) {
       const meta = prod.meta_data.find(m => m.key === WARD_URL_META_KEY);
-      if (!meta?.value) {
-        console.warn(`– [${prod.id}] Missing meta "${WARD_URL_META_KEY}", skipping`);
-        continue;
-      }
-
       try {
         console.log(`→ [${prod.id}] Scraping ${meta.value}`);
         const stock = await scrapeStock(page, meta.value);
         console.log(`   • Found stock: ${stock}`);
         await updateStock(prod.id, stock);
-        console.log(`   ✓ Updated WooCommerce product ${prod.id}`);
+        console.log(`   ✓ Updated product ${prod.id}`);
       } catch (err) {
         console.error(`   ✗ [${prod.id}] ${err.message}`);
       }
