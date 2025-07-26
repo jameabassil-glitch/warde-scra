@@ -1,5 +1,5 @@
 # .github/workflows/sync-stock.yml
-name: Sync WooCommerce Fabric Stock
+name: Sync WooCommerce Stock
 
 on:
   schedule:
@@ -16,21 +16,15 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: 18
-          # either remove the cache entirely…
-          # cache: 'npm'
-          # or point it at package.json so it doesn't look for lockfiles:
           cache: 'npm'
-          cache-dependency-path: package.json
 
       - name: Install dependencies
-        # use npm install instead of npm ci so you don’t need a lockfile
-        run: npm install
+        run: npm ci
 
       - name: Run stock sync
         env:
           WOOCOMMERCE_API_URL: ${{ secrets.WOOCOMMERCE_API_URL }}
           WOOCOMMERCE_CONSUMER_KEY: ${{ secrets.WOOCOMMERCE_CONSUMER_KEY }}
           WOOCOMMERCE_CONSUMER_SECRET: ${{ secrets.WOOCOMMERCE_CONSUMER_SECRET }}
-          FABRIC_CATEGORY_ID: ${{ secrets.FABRIC_CATEGORY_ID }}
-          WARD_URL_META_KEY: warde_url
+          # nothing else needed—WARD_URL_META_KEY defaults to "warde_url"
         run: npm run sync
