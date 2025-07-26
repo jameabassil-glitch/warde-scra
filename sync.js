@@ -1,9 +1,9 @@
 // sync.js
 //
-// Node 18+ has built‑in fetch. Installs: chrome-aws-lambda, puppeteer-core
+// Uses axios + cheerio for HTML scraping—no browser needed.
 
-const chromium = require('chrome-aws-lambda');
-const puppeteer = chromium.puppeteer || require('puppeteer-core');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const {
   WOOCOMMERCE_API_URL,
@@ -26,83 +26,78 @@ async function fetchAllProducts() {
   const auth = Buffer.from(
     `${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`
   ).toString('base64');
+
   const base = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products`;
   let page = 1, perPage = 100, all = [];
+
   while (true) {
-    const res = await fetch(`${base}?per_page=${perPage}&page=${page}`, {
-      headers: { 'Authorization': `Basic ${auth}` }
+    const res = await axios.get(base, {
+      params: { per_page: perPage, page },
+      headers: { Authorization: `Basic ${auth}` }
     });
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(`Fetch products failed (${res.status}): ${txt}`);
-    }
-    const batch = await res.json();
-    if (!batch.length) break;
-    all.push(...batch);
+    if (!res.data.length) break;
+    all.push(...res.data);
     page++;
   }
   return all;
 }
 
 async function updateStock(id, stock) {
-  const endpoint = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}`
-                 + `/wp-json/wc/v3/products/${id}`;
+  const endpoint = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}` +
+                   `/wp-json/wc/v3/products/${id}`;
   const auth = Buffer.from(
     `${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`
   ).toString('base64');
-  const res = await fetch(endpoint, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Basic ${auth}`
-    },
-    body: JSON.stringify({
-      stock_quantity: stock,
-      stock_status: stock > 0 ? 'instock' : 'outofstock'
-    })
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Update failed (${res.status}): ${txt}`);
-  }
-  return res.json();
+
+  await axios.put(endpoint,
+    { stock_quantity: stock, stock_status: stock > 0 ? 'instock' : 'outofstock' },
+    { headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Basic ${auth}`
+      }
+    }
+  );
 }
 
-async function scrapeStock(page, url) {
-  await page.goto(url, { waitUntil: 'networkidle2' });
-  const [label] = await page.$x("//*[contains(text(),'Available Stock')]");
-  if (!label) throw new Error('No “Available Stock” label found');
-  const text = await page.evaluate(el => el.nextElementSibling?.textContent, label);
-  if (!text) throw new Error('Stock text not found after label');
-  const qty = parseInt(text.replace(/\D/g, ''), 10);
-  if (isNaN(qty)) throw new Error(`Cannot parse quantity from “${text}”`);
-  return qty;
+async function scrapeStock(url) {
+  const res = await axios.get(url);
+  const $ = cheerio.load(res.data);
+
+  // find the element containing "Available Stock" and grab its next sibling's text
+  let qtyText;
+  $("*").each((_, el) => {
+    if ($(el).text().trim().includes("Available Stock")) {
+      qtyText = $(el).next().text().trim();
+      return false; // break
+    }
+  });
+
+  if (!qtyText) throw new Error('Could not find “Available Stock” in HTML');
+  const n = parseInt(qtyText.replace(/\D/g, ''), 10);
+  if (isNaN(n)) throw new Error(`Parsed non-number "${qtyText}"`);
+  return n;
 }
 
 (async () => {
-  let browser;
   try {
     console.log('🔎 Fetching all products…');
-    const all = await fetchAllProducts();
-    const fabrics = all.filter(p =>
+    const products = await fetchAllProducts();
+
+    // only those with your custom-field
+    const fabrics = products.filter(p =>
       p.meta_data.some(m => m.key === WARD_URL_META_KEY && m.value)
     );
+
     if (!fabrics.length) {
-      console.warn(`No products with meta "${WARD_URL_META_KEY}" found.`);
+      console.warn(`No products found with meta "${WARD_URL_META_KEY}".`);
       return;
     }
-    browser = await chromium.puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
-      headless: chromium.headless
-    });
-    const page = await browser.newPage();
+
     for (const prod of fabrics) {
-      const meta = prod.meta_data.find(m => m.key === WARD_URL_META_KEY);
+      const url = prod.meta_data.find(m => m.key === WARD_URL_META_KEY).value;
       try {
-        console.log(`→ [${prod.id}] Scraping ${meta.value}`);
-        const stock = await scrapeStock(page, meta.value);
+        console.log(`→ [${prod.id}] Scraping ${url}`);
+        const stock = await scrapeStock(url);
         console.log(`   • Found stock: ${stock}`);
         await updateStock(prod.id, stock);
         console.log(`   ✓ Updated product ${prod.id}`);
@@ -111,9 +106,7 @@ async function scrapeStock(page, url) {
       }
     }
   } catch (err) {
-    console.error('‼️ Fatal error:', err);
+    console.error('‼️ Fatal error:', err.message);
     process.exit(1);
-  } finally {
-    if (browser) await browser.close();
   }
 })();
