@@ -1,0 +1,14 @@
+{
+  "name": "woo-stock-sync",
+  "version": "1.0.0",
+  "description": "Sync Warde stock to WooCommerce",
+  "main": "sync.js",
+  "scripts": {
+    "start": "node sync.js"
+  },
+  "dependencies": {
+    "chrome-aws-lambda": "^10.1.0",
+    "puppeteer-core":   "^22.5.0",
+    "node-fetch":       "^3.4.0"
+  }
+}
