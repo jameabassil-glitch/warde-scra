@@ -1,7 +1,6 @@
 // sync.js
 //
-// Node 18+ includes fetch natively.
-// Installs: chrome-aws-lambda, puppeteer-core
+// Node 18+ has built‑in fetch. Installs: chrome-aws-lambda, puppeteer-core
 
 const chromium = require('chrome-aws-lambda');
 const puppeteer = chromium.puppeteer || require('puppeteer-core');
@@ -13,9 +12,12 @@ const {
   WARD_URL_META_KEY = 'warde_url'
 } = process.env;
 
-if (!WOOCOMMERCE_API_URL || !WOOCOMMERCE_CONSUMER_KEY || !WOOCOMMERCE_CONSUMER_SECRET) {
+if (!WOOCOMMERCE_API_URL ||
+    !WOOCOMMERCE_CONSUMER_KEY ||
+    !WOOCOMMERCE_CONSUMER_SECRET
+) {
   console.error(
-    'Error: Missing one of WOOCOMMERCE_API_URL, WOOCOMMERCE_CONSUMER_KEY or WOOCOMMERCE_CONSUMER_SECRET'
+    'Error: Missing WOOCOMMERCE_API_URL, WOOCOMMERCE_CONSUMER_KEY or WOOCOMMERCE_CONSUMER_SECRET'
   );
   process.exit(1);
 }
@@ -24,15 +26,10 @@ async function fetchAllProducts() {
   const auth = Buffer.from(
     `${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`
   ).toString('base64');
-
   const base = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}/wp-json/wc/v3/products`;
-  let page = 1;
-  const perPage = 100;
-  const all = [];
-
+  let page = 1, perPage = 100, all = [];
   while (true) {
-    const url = `${base}?per_page=${perPage}&page=${page}`;
-    const res = await fetch(url, {
+    const res = await fetch(`${base}?per_page=${perPage}&page=${page}`, {
       headers: { 'Authorization': `Basic ${auth}` }
     });
     if (!res.ok) {
@@ -42,19 +39,17 @@ async function fetchAllProducts() {
     const batch = await res.json();
     if (!batch.length) break;
     all.push(...batch);
-    page += 1;
+    page++;
   }
-
   return all;
 }
 
 async function updateStock(id, stock) {
-  const endpoint = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}` +
-                   `/wp-json/wc/v3/products/${id}`;
+  const endpoint = `${WOOCOMMERCE_API_URL.replace(/\/$/, '')}`
+                 + `/wp-json/wc/v3/products/${id}`;
   const auth = Buffer.from(
     `${WOOCOMMERCE_CONSUMER_KEY}:${WOOCOMMERCE_CONSUMER_SECRET}`
   ).toString('base64');
-
   const res = await fetch(endpoint, {
     method: 'PUT',
     headers: {
@@ -66,7 +61,6 @@ async function updateStock(id, stock) {
       stock_status: stock > 0 ? 'instock' : 'outofstock'
     })
   });
-
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(`Update failed (${res.status}): ${txt}`);
@@ -89,18 +83,14 @@ async function scrapeStock(page, url) {
   let browser;
   try {
     console.log('🔎 Fetching all products…');
-    const products = await fetchAllProducts();
-
-    // keep only those with your custom-field
-    const fabrics = products.filter(p =>
-      p.meta_data.some(m => m.key === WARD_URL_META_KEY && !!m.value)
+    const all = await fetchAllProducts();
+    const fabrics = all.filter(p =>
+      p.meta_data.some(m => m.key === WARD_URL_META_KEY && m.value)
     );
-
     if (!fabrics.length) {
       console.warn(`No products with meta "${WARD_URL_META_KEY}" found.`);
-      process.exit(0);
+      return;
     }
-
     browser = await chromium.puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
@@ -108,7 +98,6 @@ async function scrapeStock(page, url) {
       headless: chromium.headless
     });
     const page = await browser.newPage();
-
     for (const prod of fabrics) {
       const meta = prod.meta_data.find(m => m.key === WARD_URL_META_KEY);
       try {
@@ -123,6 +112,7 @@ async function scrapeStock(page, url) {
     }
   } catch (err) {
     console.error('‼️ Fatal error:', err);
+    process.exit(1);
   } finally {
     if (browser) await browser.close();
   }
