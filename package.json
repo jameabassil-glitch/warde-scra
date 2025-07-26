@@ -1,15 +1,15 @@
-
+// package.json
 {
   "name": "woo-stock-sync",
   "version": "1.0.0",
-  "description": "Sync fabric stock from Warde into WooCommerce",
+  "description": "Sync fabric stock from Warde into WooCommerce via HTML scraping",
   "main": "sync.js",
   "scripts": {
     "sync": "node sync.js"
   },
   "dependencies": {
-    "chrome-aws-lambda": "^10.1.0",
-    "puppeteer-core": "^10.1.0"
+    "axios": "^1.4.0",
+    "cheerio": "^1.0.0-rc.12"
   },
   "engines": {
     "node": ">=18"
